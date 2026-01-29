@@ -2,7 +2,15 @@ import streamlit as st
 import numpy as np
 import re
 import pickle
-from gensim.models import Word2Vec
+from gensim.models import KeyedVectors
+import os
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+w2v_model = KeyedVectors.load(
+    os.path.join(BASE_DIR, "w2v_vectors.kv"),
+    mmap='r'
+)
 
 # =========================
 # Load trained models
