@@ -1,134 +1,109 @@
 import streamlit as st
+import pandas as pd
 import numpy as np
 import re
 import pickle
-import os
-
-from gensim.models import KeyedVectors
+from gensim.models import Word2Vec
 
 # =========================
-# App Config
+# Page config
 # =========================
-st.set_page_config(
-    page_title="Sentiment Analysis (Word2Vec + Logistic Regression)",
-    layout="centered"
-)
+st.set_page_config(page_title="Sentiment Analysis", layout="centered")
 
-st.title("🎬 Sentiment Analysis using Word2Vec")
-st.write("Logistic Regression | IMDB Reviews")
+st.title("🎬 Sentiment Analysis using Word2Vec + Logistic Regression")
+st.write("Predict sentiment with confidence score (handles negations correctly).")
 
 # =========================
-# Load Models
-# =========================
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-
-@st.cache_resource
-def load_models():
-    lr_model = pickle.load(
-        open(os.path.join(BASE_DIR, "logistic_w2v_model.pkl"), "rb")
-    )
-
-    w2v_model = KeyedVectors.load(
-        os.path.join(BASE_DIR, "w2v_vectors.kv"),
-        mmap="r"
-    )
-
-    return lr_model, w2v_model
-
-
-lr_model, w2v_model = load_models()
-
-VECTOR_SIZE = w2v_model.vector_size
-
-# =========================
-# Text Preprocessing
+# Text preprocessing
 # =========================
 def preprocess_text(text):
-    text = re.sub(r"<.*?>", "", text)       # remove HTML tags
+    text = re.sub(r"<.*?>", "", text)          # remove HTML
     text = text.lower()
-    text = re.sub(r"[^a-z\s]", "", text)    # remove punctuation & numbers
+    text = re.sub(r"[^a-z\s]", "", text)       # keep only letters
     text = re.sub(r"\s+", " ", text).strip()
     return text
 
-
 def mark_negation(text):
     words = text.split()
-    negation_words = {"not", "no", "never", "none", "n't"}
+    neg_words = {"not", "no", "never", "none", "n't"}
     negated = False
-    new_words = []
-
-    for word in words:
-        if word in negation_words:
-            negated = True
-            new_words.append(word)
-        elif re.search(r"[.!?]", word):
-            negated = False
-            new_words.append(word)
-        elif negated:
-            new_words.append(word + "_NEG")
-        else:
-            new_words.append(word)
-
-    return " ".join(new_words)
-
-
-def sentence_vector(sentence, model):
-    words = sentence.split()
-    vec = np.zeros(VECTOR_SIZE)
-    count = 0
+    result = []
 
     for w in words:
-        if w in model:
-            vec += model[w]
-            count += 1
+        if w in neg_words:
+            negated = True
+            result.append(w)
+        elif negated:
+            result.append(w + "_NEG")
+        else:
+            result.append(w)
 
+    return " ".join(result)
+
+def sentence_vector(sentence, wv, size=100):
+    vec = np.zeros(size)
+    count = 0
+    for w in sentence.split():
+        if w in wv:
+            vec += wv[w]
+            count += 1
     if count > 0:
         vec /= count
-
     return vec.reshape(1, -1)
 
+# =========================
+# Load model & train Word2Vec
+# =========================
+@st.cache_resource
+def load_models():
+    # Load trained Logistic Regression model
+    with open("logistic_w2v_model.pkl", "rb") as f:
+        lr_model = pickle.load(f)
 
-def predict_sentiment(text):
-    clean = preprocess_text(text)
-    neg_text = mark_negation(clean)
-    vector = sentence_vector(neg_text, w2v_model)
+    # Load dataset to train Word2Vec
+    df = pd.read_csv("IMDB Dataset.csv")
 
-    prediction = lr_model.predict(vector)[0]
-    probabilities = lr_model.predict_proba(vector)[0]
+    # Preprocess + negation
+    df["processed"] = df["review"].apply(
+        lambda x: mark_negation(preprocess_text(x))
+    )
 
-    sentiment = "Positive 😊" if prediction == 1 else "Negative 😞"
+    sentences = [text.split() for text in df["processed"]]
 
-    return sentiment, probabilities
+    # Train Word2Vec inside app
+    w2v_model = Word2Vec(
+        sentences,
+        vector_size=100,
+        window=5,
+        min_count=2,
+        workers=4
+    )
 
+    return lr_model, w2v_model.wv
+
+lr_model, wv = load_models()
 
 # =========================
-# Streamlit UI
+# User input
 # =========================
-user_input = st.text_area(
-    "✍️ Enter a movie review:",
-    height=150,
-    placeholder="Example: I do not like this movie at all..."
-)
+user_text = st.text_area("Enter your review:", height=150)
 
-if st.button("Analyze Sentiment"):
-    if user_input.strip() == "":
+if st.button("Predict Sentiment"):
+    if user_text.strip() == "":
         st.warning("Please enter some text.")
     else:
-        sentiment, probs = predict_sentiment(user_input)
+        clean = preprocess_text(user_text)
+        neg = mark_negation(clean)
+        vec = sentence_vector(neg, wv)
+
+        pred = lr_model.predict(vec)[0]
+        prob = lr_model.predict_proba(vec)[0]
+
+        sentiment = "Positive 😊" if pred == 1 else "Negative 😞"
 
         st.subheader("Prediction")
-        st.success(f"Sentiment: **{sentiment}**")
+        st.success(sentiment)
 
         st.subheader("Confidence Scores")
-        st.write(f"Negative: **{probs[0]:.4f}**")
-        st.write(f"Positive: **{probs[1]:.4f}**")
-
-        st.progress(float(probs[1]))
-
-# =========================
-# Footer
-# =========================
-st.markdown("---")
-st.caption(
-    "Built with Word2Vec embeddings & Logistic Regression | Streamlit Deployment"
-)
+        st.write(f"Negative: {prob[0]:.4f}")
+        st.write(f"Positive: {prob[1]:.4f}")
